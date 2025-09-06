@@ -1,0 +1,19 @@
+[package]
+name = "avdou"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+notify = "6.1"          # file watching
+warp = "0.3"            # simple HTTP server
+serde_yaml = "0.9"      # YAML front matter
+serde_json = "1.0"      # for debugging / context
+anyhow = "1.0"
+globber = "0.1"
+pulldown-cmark = "0.9"
+tera = "1.20"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.7"
+tokio = { version = "1.40", features = ["full"] }
+pandoc = "0.8"
+walkdir = "2.5"
