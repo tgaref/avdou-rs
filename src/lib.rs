@@ -1,5 +1,5 @@
 use anyhow::Result;
-use globber::Pattern;
+use globwalk::glob;
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use pandoc::{
     InputFormat, InputKind, MarkdownExtension, OutputFormat, OutputKind, Pandoc, PandocOption,
@@ -12,13 +12,13 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tera::{Context, Tera};
-use walkdir::WalkDir;
 
 pub type Variables = HashMap<String, Value>;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Document {
     pub path: String,
+    pub raw: Vec<u8>,
     pub content: String,
     pub metadata: HashMap<String, serde_yaml::Value>,
 }
@@ -26,16 +26,16 @@ pub struct Document {
 pub type Filter = fn(Document) -> Result<Document>;
 
 pub struct Rule {
-    pub pattern: String,
+    pub pattern: Vec<String>,
     pub filters: Vec<Filter>,
     pub template: (Option<String>, HashMap<String, serde_yaml::Value>),
     pub route: Option<String>,
 }
 
 impl Rule {
-    pub fn new(pattern: &str) -> Self {
+    pub fn new(pattern: &[&str]) -> Self {
         Self {
-            pattern: pattern.to_string(),
+            pattern: pattern.iter().map(|pat| pat.to_string()).collect(),
             filters: vec![],
             template: (None, Variables::new()),
             route: None,
@@ -88,7 +88,6 @@ impl Site {
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
-
             if path.is_file() {
                 if let Some(ext) = path.extension() {
                     if ext == "html" {
@@ -105,71 +104,71 @@ impl Site {
 
     pub fn build(&mut self) -> Result<()> {
         for rule in &self.rules {
-            let pattern = Pattern::new(&rule.pattern).unwrap();
-            for entry in WalkDir::new(&self.content_dir)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                if entry.file_type().is_file() {
-                    let path = entry.path().canonicalize().unwrap();
+            let walker =
+                globwalk::GlobWalkerBuilder::from_patterns(&self.content_dir, &rule.pattern)
+                    .follow_links(true)
+                    .build()?
+                    .into_iter()
+                    .filter_map(Result::ok);
+
+            for entry in walker {
+                //                if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_file() {
                     let path_str = path.to_str().unwrap().to_string();
-                    let rel = entry.path().strip_prefix(&self.content_dir).unwrap();
-                    let rel_str = rel.to_str().unwrap().to_string();
-                    if pattern.matches(&rel_str) {
-                        // Load document
-                        let content = fs::read_to_string(&path_str)?;
-                        let (metadata, body) = parse_front_matter(&content);
-                        let mut doc = Document {
-                            path: path_str,
-                            content: body,
-                            metadata,
-                        };
+                    // Load document
+                    let mut doc = Document {
+                        path: path_str,
+                        raw: vec![],
+                        content: String::new(),
+                        metadata: Variables::new(),
+                    };
 
-                        // Apply filters
-                        for f in &rule.filters {
-                            doc = f(doc)?;
+                    // Apply filters
+                    for f in &rule.filters {
+                        doc = f(doc)?;
+                    }
+
+                    // Apply template
+                    if let Some(template_name) = &rule.template.0 {
+                        let mut ctx = Context::new();
+                        ctx.insert("content", &doc.content);
+                        for (k, v) in &rule.template.1 {
+                            ctx.insert(k, v);
                         }
-
-                        // Apply template
-                        if let Some(template_name) = &rule.template.0 {
-                            let mut ctx = Context::new();
-                            ctx.insert("content", &doc.content);
-                            for (k, v) in &rule.template.1 {
-                                ctx.insert(k, v);
-                            }
-                            for (k, v) in &doc.metadata {
-                                ctx.insert(k, v);
-                            }
-                            let html = self.tera.render(template_name, &ctx)?;
-                            doc.content = html;
+                        for (k, v) in &doc.metadata {
+                            ctx.insert(k, v);
                         }
+                        let html = self.tera.render(template_name, &ctx)?;
+                        doc.content = html;
+                    }
 
-                        // Determine output path
-                        let out = if let Some(route) = &rule.route {
-                            let p = Path::new(&doc.path).to_path_buf();
-                            let slug = p.file_stem().unwrap();
-                            let filename = p.file_name().unwrap();
-                            let tmp = route.replace("{slug}", slug.to_str().unwrap());
-                            tmp.replace("{filename}", filename.to_str().unwrap())
-                        } else {
-                            doc.path.clone()
-                        };
-                        let out_path = Path::new(&out);
-                        let final_path = Path::new(&self.output_dir).join(out_path);
-                        if let Some(parent) = final_path.parent() {
-                            fs::create_dir_all(parent).expect("Failed to create directories");
-                        }
+                    // Determine output path
 
-                        self.built_docs.push(doc.clone());
+                    let final_path = if let Some(path) = &rule.route {
+                        Path::new(&self.output_dir).join(nice_route(path, &self.content_dir, &doc))
+                    } else {
+                        Path::new(&self.output_dir).join(&doc.path)
+                    };
+
+                    if let Some(parent) = final_path.parent() {
+                        fs::create_dir_all(parent).expect("Failed to create directories");
+                    }
+
+                    self.built_docs.push(doc.clone());
+                    if !doc.raw.is_empty() {
+                        fs::write(&final_path, doc.raw)?;
+                    } else if !doc.content.is_empty() {
                         fs::write(&final_path, doc.content)?;
                     }
                 }
             }
         }
+        //      }
         Ok(())
     }
 
-    pub fn serve(self) -> Result<()> {
+    pub fn serve(self, port: u16, base: &'static str) -> Result<()> {
         let site = Arc::new(Mutex::new(self));
         let site_clone = site.clone();
 
@@ -185,9 +184,9 @@ impl Site {
         )?;
 
         // Serve public/ via warp
-        let dir = warp::fs::dir("public/");
-        println!("Serving at http://localhost:8000");
-        tokio::runtime::Runtime::new()?.block_on(warp::serve(dir).run(([127, 0, 0, 1], 8000)));
+        let dir = warp::fs::dir(base);
+        println!("Serving at http://localhost:{}", port);
+        tokio::runtime::Runtime::new()?.block_on(warp::serve(dir).run(([127, 0, 0, 1], port)));
         Ok(())
     }
 }
@@ -215,11 +214,22 @@ pub fn markdown_to_html(doc: Document) -> Result<Document> {
     })
 }
 
-pub fn copy_file_compiler(doc: Document) -> Result<Document> {
-    Ok(doc)
+pub fn pandoc_markdown_compiler(mut doc: Document) -> Result<Document> {
+    let p = Path::new(&doc.path).canonicalize().unwrap();
+    let content = fs::read_to_string(p)?;
+    let (metadata, body) = parse_front_matter(&content);
+    doc.metadata = metadata;
+    doc.content = body;
+    pandoc_markdown_to_html(doc)
 }
 
-pub fn pandoc_markdown_compiler(doc: Document) -> Result<Document> {
+pub fn copy_file_compiler(doc: Document) -> Result<Document> {
+    let p = Path::new(&doc.path).canonicalize().unwrap();
+    let raw = fs::read(p)?;
+    Ok(Document { raw, ..doc })
+}
+
+fn pandoc_markdown_to_html(doc: Document) -> Result<Document> {
     let mut pandoc = Pandoc::new();
 
     // enable extensions you care about
@@ -253,4 +263,20 @@ pub fn pandoc_markdown_compiler(doc: Document) -> Result<Document> {
         )),
         PandocOutput::ToBufferRaw(_) => todo!(),
     }
+}
+
+pub fn nice_route(path: &str, base: &str, doc: &Document) -> String {
+    let doc_path = Path::new(&doc.path);
+    let rel = doc_path
+        .parent()
+        .unwrap()
+        .strip_prefix(base)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let slug = doc_path.file_stem().unwrap().to_str().unwrap();
+    let filename = doc_path.file_name().unwrap().to_str().unwrap();
+    let p1 = path.replace("{path}", rel);
+    let p2 = p1.replace("{slug}", slug);
+    p2.replace("{filename}", &filename)
 }
