@@ -1,5 +1,7 @@
+pub mod shortcodes;
+pub use shortcodes::{expand_shortcodes, Shortcode, SomeShortcode};
+
 use anyhow::Result;
-use globwalk::glob;
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use pandoc::{
     InputFormat, InputKind, MarkdownExtension, OutputFormat, OutputKind, Pandoc, PandocOption,
@@ -23,19 +25,39 @@ pub struct Document {
     pub metadata: HashMap<String, serde_yaml::Value>,
 }
 
-pub type Filter = fn(Document) -> Result<Document>;
+pub type Filter = Box<dyn Fn(Document) -> anyhow::Result<Document> + Send + Sync>;
+
+//pub type Filter = fn(Document) -> Result<Document>;
+
+#[derive(Eq, PartialEq, Debug)]
+pub enum DocType {
+    Bytes,
+    Text,
+}
 
 pub struct Rule {
     pub pattern: Vec<String>,
+    pub doc_type: DocType,
     pub filters: Vec<Filter>,
     pub template: (Option<String>, HashMap<String, serde_yaml::Value>),
     pub route: Option<String>,
 }
 
 impl Rule {
-    pub fn new(pattern: &[&str]) -> Self {
+    pub fn load_bytes(pattern: &[&str]) -> Self {
         Self {
             pattern: pattern.iter().map(|pat| pat.to_string()).collect(),
+            doc_type: DocType::Bytes,
+            filters: vec![],
+            template: (None, Variables::new()),
+            route: None,
+        }
+    }
+
+    pub fn load_text(pattern: &[&str]) -> Self {
+        Self {
+            pattern: pattern.iter().map(|pat| pat.to_string()).collect(),
+            doc_type: DocType::Text,
             filters: vec![],
             template: (None, Variables::new()),
             route: None,
@@ -43,7 +65,7 @@ impl Rule {
     }
 
     pub fn compiler(mut self, filter: Filter) -> Self {
-        self.filters.push(filter);
+        self.filters.push(Box::new(filter));
         self
     }
 
@@ -84,8 +106,11 @@ impl Site {
 
     pub fn load_templates(mut self, dir: &str) -> Self {
         let mut tera = Tera::default();
-
-        for entry in fs::read_dir(dir).unwrap() {
+        let p = Path::new(&self.content_dir)
+            .join(dir)
+            .canonicalize()
+            .unwrap();
+        for entry in fs::read_dir(p).unwrap() {
             let entry = entry.unwrap();
             let path = entry.path();
             if path.is_file() {
@@ -108,20 +133,32 @@ impl Site {
                 globwalk::GlobWalkerBuilder::from_patterns(&self.content_dir, &rule.pattern)
                     .follow_links(true)
                     .build()?
-                    .into_iter()
                     .filter_map(Result::ok);
 
             for entry in walker {
-                //                if let Ok(entry) = entry {
                 let path = entry.path();
                 if path.is_file() {
                     let path_str = path.to_str().unwrap().to_string();
                     // Load document
-                    let mut doc = Document {
-                        path: path_str,
-                        raw: vec![],
-                        content: String::new(),
-                        metadata: Variables::new(),
+                    let mut doc = if rule.doc_type == DocType::Bytes {
+                        let p = Path::new(&path_str).canonicalize().unwrap();
+                        let raw = fs::read(p)?;
+                        Document {
+                            path: path_str,
+                            raw,
+                            content: String::new(),
+                            metadata: Variables::new(),
+                        }
+                    } else {
+                        let p = Path::new(&path_str).canonicalize().unwrap();
+                        let content = fs::read_to_string(p)?;
+                        let (metadata, body) = parse_front_matter(&content);
+                        Document {
+                            path: path_str,
+                            raw: vec![],
+                            content: body,
+                            metadata,
+                        }
                     };
 
                     // Apply filters
@@ -164,7 +201,6 @@ impl Site {
                 }
             }
         }
-        //      }
         Ok(())
     }
 
@@ -214,26 +250,29 @@ pub fn markdown_to_html(doc: Document) -> Result<Document> {
     })
 }
 
-pub fn pandoc_markdown_compiler(mut doc: Document) -> Result<Document> {
-    let p = Path::new(&doc.path).canonicalize().unwrap();
-    let content = fs::read_to_string(p)?;
-    let (metadata, body) = parse_front_matter(&content);
-    doc.metadata = metadata;
-    doc.content = body;
-    pandoc_markdown_to_html(doc)
+pub fn copy_file_compiler() -> Filter {
+    Box::new(move |doc: Document| Ok(doc))
 }
 
-pub fn copy_file_compiler(doc: Document) -> Result<Document> {
-    let p = Path::new(&doc.path).canonicalize().unwrap();
-    let raw = fs::read(p)?;
-    Ok(Document { raw, ..doc })
+pub fn pandoc_markdown_compiler() -> Filter {
+    Box::new(move |doc: Document| pandoc_markdown_to_html(doc))
+}
+
+pub fn expand_shortcodes_compiler(handlers: Vec<SomeShortcode>) -> Filter {
+    Box::new(move |doc: Document| {
+        let expanded = expand_shortcodes(&doc.content, &handlers);
+        Ok(Document {
+            content: expanded,
+            ..doc
+        })
+    })
 }
 
 fn pandoc_markdown_to_html(doc: Document) -> Result<Document> {
     let mut pandoc = Pandoc::new();
 
     // enable extensions you care about
-    let md_exts = vec![
+    let md_input_exts = vec![
         MarkdownExtension::Smart,            // smart quotes, dashes
         MarkdownExtension::LatexMacros,      // footnotes
         MarkdownExtension::FencedCodeBlocks, // triple backticks
@@ -242,11 +281,18 @@ fn pandoc_markdown_to_html(doc: Document) -> Result<Document> {
         MarkdownExtension::HeaderAttributes, // attributes after headers
         MarkdownExtension::AutoIdentifiers,  // generate id=... for headers
         MarkdownExtension::TexMathDollars,   // math $...$
+        MarkdownExtension::RawHtml,
+        MarkdownExtension::FencedDivs,
+        //MarkdownExtension::MarkdownInHtmlBlocks,
+        MarkdownExtension::Abbreviations,
+        MarkdownExtension::NativeDivs,
     ];
 
+    let md_output_exts = vec![MarkdownExtension::RawHtml];
+
     pandoc
-        .set_input_format(InputFormat::Markdown, md_exts)
-        .set_output_format(OutputFormat::Html, vec![])
+        .set_input_format(InputFormat::Markdown, md_input_exts)
+        .set_output_format(OutputFormat::Html5, md_output_exts)
         .set_input(InputKind::Pipe(doc.content.clone()))
         .set_output(OutputKind::Pipe);
 

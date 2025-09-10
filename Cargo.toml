@@ -16,3 +16,4 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.7"
 tokio = { version = "1.40", features = ["full"] }
 pandoc = "0.8"
+nom = "7"
