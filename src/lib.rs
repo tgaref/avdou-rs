@@ -27,8 +27,6 @@ pub struct Document {
 
 pub type Filter = Box<dyn Fn(Document) -> anyhow::Result<Document> + Send + Sync>;
 
-//pub type Filter = fn(Document) -> Result<Document>;
-
 #[derive(Eq, PartialEq, Debug)]
 pub enum DocType {
     Bytes,
@@ -39,7 +37,8 @@ pub struct Rule {
     pub pattern: Vec<String>,
     pub doc_type: DocType,
     pub filters: Vec<Filter>,
-    pub template: (Option<String>, HashMap<String, serde_yaml::Value>),
+    pub context: Variables,
+    pub template: Option<String>,
     pub route: Option<String>,
 }
 
@@ -49,7 +48,8 @@ impl Rule {
             pattern: pattern.iter().map(|pat| pat.to_string()).collect(),
             doc_type: DocType::Bytes,
             filters: vec![],
-            template: (None, Variables::new()),
+            context: Variables::new(),
+            template: None,
             route: None,
         }
     }
@@ -59,7 +59,8 @@ impl Rule {
             pattern: pattern.iter().map(|pat| pat.to_string()).collect(),
             doc_type: DocType::Text,
             filters: vec![],
-            template: (None, Variables::new()),
+            context: Variables::new(),
+            template: None,
             route: None,
         }
     }
@@ -69,8 +70,13 @@ impl Rule {
         self
     }
 
-    pub fn template(mut self, template: &str, context: Variables) -> Self {
-        self.template = (Some(template.to_string()), context);
+    pub fn context(mut self, ctx: Variables) -> Self {
+        self.context = ctx;
+        self
+    }
+
+    pub fn template(mut self, template: &str) -> Self {
+        self.template = Some(template.to_string());
         self
     }
 
@@ -161,21 +167,29 @@ impl Site {
                         }
                     };
 
+                    // Build context
+                    let mut ctx = Context::new();
+                    for (k, v) in rule.context.iter() {
+                        ctx.insert(k, v);
+                    }
+                    for (k, v) in &doc.metadata {
+                        ctx.insert(k, v);
+                    }
+
+                    // Apply template to markdown NEED TO ADD CONTEXT: ADD CONTEXT IN avdou_site THAT IS USED HERE!
+
+                    self.tera.add_raw_template(&doc.path, &doc.content).unwrap();
+                    let md = self.tera.render(&doc.path, &ctx)?;
+                    doc.content = md;
+
                     // Apply filters
                     for f in &rule.filters {
                         doc = f(doc)?;
                     }
 
                     // Apply template
-                    if let Some(template_name) = &rule.template.0 {
-                        let mut ctx = Context::new();
+                    if let Some(template_name) = &rule.template {
                         ctx.insert("content", &doc.content);
-                        for (k, v) in &rule.template.1 {
-                            ctx.insert(k, v);
-                        }
-                        for (k, v) in &doc.metadata {
-                            ctx.insert(k, v);
-                        }
                         let html = self.tera.render(template_name, &ctx)?;
                         doc.content = html;
                     }
