@@ -9,8 +9,10 @@ use pandoc::{
     PandocOutput,
 };
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, Permissions};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
 use tera::{Context, Tera};
 
 pub type Filter = Box<dyn Fn(Document) -> anyhow::Result<Document> + Send + Sync>;
@@ -110,9 +112,9 @@ impl Rule {
 
                 let f = &self.route;
                 let final_path = f(path, site_dir, public_dir);
-
                 if let Some(parent) = final_path.parent() {
                     fs::create_dir_all(parent).expect("Failed to create directories");
+                    fs::set_permissions(parent, Permissions::from_mode(0o755))?;
                 }
 
                 fs::write(&final_path, doc.content)?;
@@ -157,9 +159,9 @@ impl Copy {
 
                 if let Some(parent) = final_path.parent() {
                     fs::create_dir_all(parent).expect("Failed to create directories");
+                    fs::set_permissions(parent, Permissions::from_mode(0o755))?;
                 }
-
-                fs::copy(&path, &final_path)?;
+                fs::copy(path, &final_path)?;
             }
         }
         Ok(())

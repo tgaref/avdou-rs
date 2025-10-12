@@ -34,14 +34,14 @@ pub struct Site {
 }
 
 impl Site {
-    pub fn new(site_dir: &str, public_dir: &str) -> Result<Self> {
-        Ok(Self {
+    pub fn new(site_dir: &str, public_dir: &str) -> Self {
+        Self {
             site_dir: site_dir.to_string(),
             public_dir: public_dir.to_string(),
             rules: vec![],
             copies: vec![],
             tera: Tera::default(),
-        })
+        }
     }
 
     pub fn rule(mut self, rule: Rule) -> Self {
@@ -75,6 +75,24 @@ impl Site {
         self
     }
 
+    pub fn clean(&self) -> Result<()> {
+    let dir_path = Path::new(&self.public_dir);
+
+    // Attempt to remove the directory and its contents
+    if dir_path.exists() {
+        fs::remove_dir_all(dir_path)?;
+        println!(
+            "Directory '{}' and its contents removed successfully.",
+            dir_path.display()
+        );
+    } else {
+        println!("Directory '{}' does not exist.", dir_path.display());
+    }
+
+    Ok(())
+}
+
+    
     pub fn build(&mut self) -> Result<()> {
         for rule in &self.rules {
             rule.execute(&self.site_dir, &self.public_dir, &mut self.tera)?;
@@ -88,8 +106,8 @@ impl Site {
     }
 
     pub fn serve(self, port: u16) -> Result<()> {
-        let site = Arc::new(Mutex::new(self));
-
+        let site = Arc::new(Mutex::new(self));	
+	
         // Watch for changes
         let site_clone = site.clone();
         let mut watcher = recommended_watcher(move |_| {
@@ -103,10 +121,11 @@ impl Site {
             let site = site.lock().unwrap();
             site.public_dir.clone()
         };
-        watcher.watch(Path::new(&public_dir), RecursiveMode::Recursive)?;
-
+	println!("Watching: {:?}", Path::new(&public_dir));
+	watcher.watch(Path::new(&public_dir), RecursiveMode::Recursive)?;
+	
         // Route to serve files
-        let files = warp::path::full()
+	let files = warp::path::full()
             .and(warp::any().map(move || site.clone()))
             .and_then(move |full_path: warp::path::FullPath, site: Arc<Mutex<Site>>| {
                 async move {
@@ -128,8 +147,6 @@ impl Site {
                     if file_path.is_dir() {
                         file_path = file_path.join("index.html");
                     }
-
-                    println!("Serving file: {:?}", file_path);
 
                     // Return 404 if file doesn't exist
                     if !file_path.exists() {
@@ -175,6 +192,5 @@ impl Site {
         Runtime::new()?.block_on(warp::serve(routes).run(([127, 0, 0, 1], port)));
 
         Ok(())
-    }
-    
+    }    
 }
