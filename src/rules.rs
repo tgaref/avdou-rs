@@ -26,14 +26,19 @@ pub struct Rule {
 }
 
 impl Rule {
-    pub fn load(pattern: &[&str]) -> Self {
+    pub fn new() -> Self {
         Self {
-            pattern: pattern.iter().map(|pat| pat.to_string()).collect(),
+            pattern: Vec::new(),
             filters: vec![],
             context: Variables::new(),
             template: None,
             route: Box::new(id_route),
         }
+    }
+
+    pub fn pattern(mut self, pattern: &[&str]) -> Self {
+        self.pattern = pattern.iter().map(|pat| pat.to_string()).collect();
+        self
     }
 
     pub fn compiler(mut self, filter: Filter) -> Self {
@@ -130,11 +135,16 @@ pub struct Copy {
 }
 
 impl Copy {
-    pub fn source(pattern: &[&str]) -> Self {
-        Self {
-            pattern: pattern.iter().map(|pat| pat.to_string()).collect(),
+    pub fn new() -> Self {
+        Copy {
+            pattern: vec![],
             route: Box::new(id_route),
         }
+    }
+
+    pub fn pattern(mut self, pattern: &[&str]) -> Self {
+        self.pattern = pattern.iter().map(|pat| pat.to_string()).collect();
+        self
     }
 
     pub fn route(

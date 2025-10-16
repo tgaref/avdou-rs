@@ -1,23 +1,27 @@
-pub mod rule;
-pub use rule::{Copy, Rule};
+pub mod rules;
+pub use rules::{Copy, Rule};
 
 pub mod document;
 pub use document::Document;
 
 pub mod context;
+pub use context::{Variables, VarsExt, Mine, Miner};
 
 pub mod shortcodes;
 pub use shortcodes::{expand_shortcodes, Shortcode};
 
 pub mod route;
 
+pub mod macros;
+
 use anyhow::Result;
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 
-use std::fs;
 use std::path::{Path};
 use std::sync::{Arc, Mutex};
-use tera::Tera;
+use std::fs::{self, Permissions};
+use std::os::unix::fs::PermissionsExt;
+pub use tera::Tera;
 use tokio::runtime::Runtime;
 use warp::hyper::Body;
 use warp::{
@@ -34,16 +38,31 @@ pub struct Site {
 }
 
 impl Site {
-    pub fn new(site_dir: &str, public_dir: &str) -> Self {
+    pub fn new() -> Self {
         Self {
-            site_dir: site_dir.to_string(),
-            public_dir: public_dir.to_string(),
+            site_dir: String::new(),
+            public_dir: String::new(),
             rules: vec![],
             copies: vec![],
             tera: Tera::default(),
         }
     }
 
+    pub fn site_dir(mut self, site_dir: &str) -> Self {
+	self.site_dir = site_dir.to_string();
+	self 
+    }
+
+    pub fn public_dir(mut self, public_dir: &str) -> Self {
+	if !Path::new(public_dir).exists() {
+            println!("Directory does not exist. Creating: {}", public_dir);
+            fs::create_dir_all(public_dir).expect("Failed to create directory"); // create all parent directories if needed
+            fs::set_permissions(public_dir, Permissions::from_mode(0o755)).expect("Failed to set permissions");
+	}
+	self.public_dir = public_dir.to_string();
+	self 
+    }
+    
     pub fn rule(mut self, rule: Rule) -> Self {
         self.rules.push(rule);
         self

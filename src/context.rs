@@ -4,11 +4,22 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::rule::parse_front_matter;
+use crate::rules::parse_front_matter;
 use crate::Document;
 
 pub type Variables = HashMap<String, Value>;
 pub type Miner = Box<dyn Fn(&Document) -> Variables>;
+
+pub trait VarsExt {
+    fn var<K: Into<String>, V: Into<serde_yaml::Value>>(self, k: K, v: V) -> Self;
+}
+
+impl VarsExt for Variables {
+    fn var<K: Into<String>, V: Into<serde_yaml::Value>>(mut self, k: K, v: V) -> Self {
+        self.insert(k.into(), v.into());
+        self
+    }
+}
 
 pub type Data = HashMap<String, Variables>;
 
@@ -18,15 +29,23 @@ pub struct Mine {
 }
 
 impl Mine {
-    pub fn load(pattern: &[&str]) -> Self {
+    pub fn new() -> Self {
         Mine {
-            pattern: pattern.iter().map(|pat| pat.to_string()).collect(),
+            pattern: vec![],
             miners: vec![],
         }
     }
 
-    pub fn miner(mut self, f: Miner) -> Self {
-        self.miners.push(f);
+    pub fn pattern(mut self, pattern: &[&str]) -> Self {
+        self.pattern = pattern.iter().map(|pat| pat.to_string()).collect();
+        self
+    }
+
+    pub fn miner<T>(mut self, f: T) -> Self
+    where
+        T: Fn(&Document) -> Variables + 'static,
+    {
+        self.miners.push(Box::new(f));
         self
     }
 
