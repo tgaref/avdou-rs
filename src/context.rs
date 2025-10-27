@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::rules::parse_front_matter;
+use crate::document::parse_front_matter;
 use crate::Document;
 
 pub type Variables = HashMap<String, Value>;

@@ -34,6 +34,13 @@ macro_rules! route {
 }
 
 #[macro_export]
+macro_rules! getmetadata {
+    ( $r:expr ) => {
+        $r
+    };
+}
+
+#[macro_export]
 macro_rules! rule {
     ($($args:tt)*) => {
         {
@@ -71,6 +78,11 @@ macro_rules! rule_items {
         rule_items!($r; $($rest)*);
     }};
 
+    ($r:ident; getmetadata!($rt:expr) ; $($rest:tt)*) => {{
+	$r = $r.getmetadata($rt);
+        rule_items!($r; $($rest)*);
+    }};
+
     // without ; at the end
 
     ($r:ident; pattern!($pat:expr) $($rest:tt)*) => {{
@@ -95,6 +107,11 @@ macro_rules! rule_items {
 
     ($r:ident; route!($rt:expr) $($rest:tt)*) => {{
         $r = $r.route($rt);
+        rule_items!($r; $($rest)*);
+    }};
+
+    ($r:ident; getmetadata!($rt:expr) $($rest:tt)*) => {{
+	$r = $r.getmetadata($rt);
         rule_items!($r; $($rest)*);
     }};
 

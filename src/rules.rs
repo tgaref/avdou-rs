@@ -1,5 +1,5 @@
 use super::context::Variables;
-use super::document::Document;
+use super::document::{load_document, Document};
 use super::route::{id_route, Route};
 use super::shortcodes::{expand_shortcodes, Shortcode};
 
@@ -8,7 +8,6 @@ use pandoc::{
     InputFormat, InputKind, MarkdownExtension, OutputFormat, OutputKind, Pandoc, PandocOption,
     PandocOutput,
 };
-use std::collections::HashMap;
 use std::fs::{self, Permissions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -23,6 +22,7 @@ pub struct Rule {
     pub context: Variables,
     pub template: Option<String>,
     pub route: Route,
+    pub splitmeta: bool,
 }
 
 impl Rule {
@@ -33,6 +33,7 @@ impl Rule {
             context: Variables::new(),
             template: None,
             route: Box::new(id_route),
+            splitmeta: true,
         }
     }
 
@@ -64,6 +65,11 @@ impl Rule {
         self
     }
 
+    pub fn getmetadata(mut self, choice: bool) -> Self {
+        self.splitmeta = choice;
+        self
+    }
+
     pub fn execute(&self, site_dir: &str, public_dir: &str, tera: &mut Tera) -> Result<()> {
         let walker = globwalk::GlobWalkerBuilder::from_patterns(site_dir, &self.pattern)
             .follow_links(true)
@@ -75,16 +81,7 @@ impl Rule {
             if path.is_file() {
                 let path_str = path.to_str().unwrap().to_string();
                 // Load document
-                let mut doc = {
-                    let p = Path::new(&path_str).canonicalize().unwrap();
-                    let content = fs::read_to_string(p)?;
-                    let (metadata, body) = parse_front_matter(&content);
-                    Document {
-                        path: path_str,
-                        content: body,
-                        metadata,
-                    }
-                };
+                let mut doc = load_document(self.splitmeta, path_str);
 
                 // Build context
                 let mut ctx = Context::new();
@@ -176,19 +173,6 @@ impl Copy {
         }
         Ok(())
     }
-}
-
-pub fn parse_front_matter(raw: &str) -> (HashMap<String, serde_yaml::Value>, String) {
-    if let Some(striped) = raw.strip_prefix("---") {
-        if let Some(end) = striped.find("---") {
-            let meta_str = &striped[..end];
-            let body = &striped[end + 3..];
-            let metadata: HashMap<String, serde_yaml::Value> =
-                serde_yaml::from_str(meta_str).unwrap_or_default();
-            return (metadata, body.trim().to_string());
-        }
-    }
-    (HashMap::new(), raw.to_string())
 }
 
 pub fn pandoc_markdown_compiler() -> Filter {

@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+#[derive(Copy, Clone, Debug)]
 pub struct Shortcode {
     pub tag: &'static str,
     pub render: fn(&[String]) -> String,
